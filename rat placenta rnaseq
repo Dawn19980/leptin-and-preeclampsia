@@ -1,0 +1,552 @@
+library(dplyr)
+
+fpkm <- read.csv("results-FPKM-D13PE NC.csv",header=TRUE,row.names=1,check.names=F)
+group <- read.csv("group.csv",header=TRUE)
+groupdata <- group[!duplicated(as.character(group$id)),]
+id <- as.character(unique(groupdata$id))
+dex <- as.character(unique(groupdata$dex))
+groupdata$dex <- factor(groupdata$dex,levels=dex)
+
+data <- subset(fpkm)
+data <- data[rowSums(data)>1,]
+data <- na.omit(data)
+data <- log2(data+1)
+data <- scale(data)
+data <- t(scale(t(data),center=TRUE,scale=F))
+
+pca <- prcomp(t(data),center=FALSE,scale.=FALSE)
+pca
+percent_variance <- round(100 * (pca$sdev^2) / sum(pca$sdev^2), 1)
+variance_df <- data.frame(Principal_Component = paste("PC", 1:length(percent_variance)), 
+                          Variance_Explained = percent_variance)
+variance_df
+ggplot(variance_df, aes(x = Principal_Component, y = Variance_Explained)) +
+  geom_bar(stat = "identity", fill = "skyblue", width = 0.5) +
+  theme_minimal()
+
+pca_mat <- data.frame(pc1=pca$x[,1],pc2=pca$x[,2],sample=groupdata$id,group=groupdata$dex)
+pca_mat
+
+library(ggplot2)
+p <- ggplot(pca_mat,aes(x=pc1,y=pc2,label=sample,colour=group)) +
+  geom_point(size=3.3) +
+  geom_text(colour='black',size=2.5,nudge_y=0.5,nudge_x=1) +
+  labs(x=paste0("PC1 (",variance_df[1,2],"%)"),
+       y=paste0("PC2 (",variance_df[2,2],"%)")) +
+  geom_hline(yintercept=0,linetype='dotdash',size=0.8,color='grey') +
+  geom_vline(xintercept=0,linetype='dotdash',size=0.8,color='grey') +
+  theme_bw() +
+  theme(axis.title.x=element_text(size=12),
+、        axis.title.y=element_text(size=12,angle=90),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(size=10),
+        panel.grid=element_blank())
+p
+
+
+##DEG
+mycounts<-read.csv("results-count-D13PE NC.csv",row.names = 1)
+mycounts_1<-mycounts[rowSums(mycounts) != 0,]\
+dim(mycounts_1)
+mymeta<-read.csv("group.csv",stringsAsFactors = T)
+mymeta
+colnames(mycounts_1) == mymeta$id 
+
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData=mycounts_1, 
+                              colData=mymeta, 
+                              design=~dex)
+dds <- DESeq(dds)
+res <- results(dds)
+
+head(res)
+class(res)
+res_1<-data.frame(res)
+class(res_1)
+head(res_1)
+library(dplyr)
+res_1 %>% 
+  mutate(group = case_when(
+    log2FoldChange >= 2 & pvalue <= 0.05 ~ "UP",
+    log2FoldChange <= -2 & pvalue <= 0.05 ~ "DOWN",
+    TRUE ~ "NOT_CHANGE"
+  )) -> res_2
+table(res_2$group)
+
+write.csv(res_2,file="diff_expr_result.csv", quote = F)
+
+
+##volcanon
+
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+data <- read.csv("diff_expr_result.csv")
+head(data)
+data <- data %>% 
+  select(gene, log2FoldChange, pvalue, padj)
+data <- data %>% dplyr::filter(log2FoldChange >= -6 & log2FoldChange <= 6)
+data <- data %>% dplyr::filter(-log10(pvalue) >= -1 & -log10(pvalue) <= 5)
+
+data_DOWN <- subset(data, log2FoldChange < -1 & pvalue < 0.05)
+data_UP <- subset(data, log2FoldChange > 1 & pvalue < 0.05)
+Mark <- c("Gdf15","Tlr2","Igfbp3","Adm","BMP6","Htra3",
+          "Tnf","Nos1","Icam1","Fos","Mmp3","Tyrobp","Ddit4")
+data <- data %>% 
+  mutate(group = case_when(
+    gene %in% Mark ~ "Mark",
+    gene %in% as.character(data_UP$gene) ~ "UP",
+    gene %in% as.character(data_DOWN$gene) ~ "DOWN",
+    TRUE ~ "Other"
+  ))
+
+p <- ggplot(data, aes(y = log2FoldChange, x = -log10(pvalue))) +
+  # 背景矩形区域（修复关键问题：移除aes()中的动态映射）
+  geom_rect(
+    ymin = min(data_UP$log2FoldChange),
+    ymax = max(data_UP$log2FoldChange),
+    xmin = -log10(0.05),
+    xmax = max(-log10(data_UP$pvalue)),  # 使用max而非min
+    fill = "#ffebe9", alpha = 0.3  # 增加alpha使颜色可见
+  ) +
+  geom_rect(
+    ymin = min(data_DOWN$log2FoldChange),
+    ymax = max(data_DOWN$log2FoldChange),
+    xmin = -log10(0.05),
+    xmax = max(-log10(data_DOWN$pvalue)),  # 使用max而非min
+    fill = "#E8F1F8", alpha = 0.3  # 增加alpha使颜色可见
+  ) +
+  geom_hline(yintercept = 0, linewidth = 1, linetype = "dotted", color = "grey60") +
+  geom_vline(xintercept = -log10(0.05), linewidth = 1, linetype = "dotted", color = "#AD6D6F") +
+  geom_point(data = subset(data, group == "Other"), shape = 21, color = "black", alpha = 0.1, size = 2, stroke = 1.2) +
+  geom_point(data = subset(data, group == "UP"), shape = 21, fill = "#d45340", color = "black", size = 2.8, stroke = 0.3) +
+  geom_point(data = subset(data, group == "DOWN"), shape = 21, fill = "#5686C3", color = "black", size = 2.8, stroke = 0.3) +
+  geom_point(data = subset(data, group == "Mark"), shape = 21, fill = "#F7F2AD", color = "black", size = 3.5, stroke = 1.2) +
+  geom_label_repel(
+    data = subset(data, gene %in% Mark),
+    aes(label = gene),
+    fill = "white",
+    color = "black",
+    label.padding = unit(0.3, "lines"),
+    label.size = 0.5,
+    alpha = 1,
+    min.segment.length = unit(0.05, "lines"),
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.5, "lines"),
+    segment.color = "grey30",
+    direction = "both",
+    seed = 1,
+    size = 10#,
+    #fontface = "bold"
+  ) +
+   annotate("text",
+           y = -1.5,
+           x = max(-log10(data_DOWN$pvalue)) + 0.4,  
+           label = "DOWN",
+           lineheight = 0.8,
+           size = 8,
+           color = "#5686C3",
+           fontface = "bold",
+           vjust = 0) +
+  annotate("text",
+           y = 1.5,
+           x = max(-log10(data_UP$pvalue)) + 0.4,  
+           label = "UP",
+           lineheight = 0.8,
+           size = 8,
+           color = "#e63118",
+           fontface = "bold",
+           vjust = 0) +
+  annotate("text",
+           y = 6,
+           x = -log10(0.05) - 0.05,
+           label = "α = 0.05",
+           lineheight = 1,
+           size =8,
+           color = "#AD6D6F",
+           hjust = 1,
+           vjust = 1) +
+
+  scale_y_continuous(limits = c(-6.5, 6.5), breaks = seq(-5, 5, 1), labels = seq(-5, 5, 1), expand = c(0, 0)) +
+  scale_x_continuous(limits = c(0, 6), breaks = seq(0, 5.5, 2), labels = c(0, 2, 4), expand = expansion(add = c(0, 0.10))) +
+
+  labs(y = "log2FC)", x = "-log10 (P value)") +
+
+  theme_classic() +
+  theme(
+    axis.text = element_text(color = "black", size = 20),
+    axis.title = element_text(color = "black", size = 20, face = "bold"),
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank()
+  )
+print(p)
+
+
+##heatmpa
+library(AnnoProbe)
+library(ggplot2)
+library(ggstatsplot)
+library(patchwork)
+library(reshape2)
+library(stringr)
+library(limma)
+library(tidyverse)
+library(dplyr)
+
+data0 <- read.csv("results-FPKM-D13PE NC.csv")
+annotation <- read.csv("annotation.csv")
+dat <- left_join(data0, annotation %>% select(gene_id, gene_name), by = "gene_id")
+dat <- dat[, c(8,2:7)]
+dat <- avereps(dat[,-1],ID = dat$gene_name) %>% 
+  as.data.frame()
+if (max(dat) > 100) {dat <- log2(dat + 1)}
+sum(is.na(dat))
+ 
+data1<- read.csv('diff_expr_result.csv', header = TRUE)
+data1$gene_id <-data1$X 
+data1$gene_name <- data1$gene
+data <- left_join(data1, data0, by = "gene_id")
+data <- data %>%
+  select(gene_id, log2FoldChange,pvalue, gene_name)
+DOWN <- subset(data, log2FoldChange < -1 & pvalue < 0.05)
+UP <- subset(data, log2FoldChange > 1 & pvalue < 0.05)
+genes_up <- UP$gene_name
+exp_up <- dat[genes_up, ]
+genes_down <- DOWN$gene_name
+exp_down <- dat[genes_down, ]
+exp <- rbind(exp_up, exp_down)
+
+library(ComplexHeatmap)
+library(circlize)
+exp_scale <- t(scale(t(exp)))
+rownames(exp_scale) <- trimws(rownames(exp)) 
+exp_scale[exp_scale > 4] <- 4
+exp_scale[exp_scale < -4] <- -4
+gene_class <- ifelse(rownames(exp) %in% trimws(genes_up), "UP", 
+                     ifelse(rownames(exp) %in% trimws(genes_down), "DOWN", NA))
+ha_row <- rowAnnotation(
+  Regulation = gene_class,
+  col = list(Regulation = c("UP" = "#e63118", "DOWN" = "#5686C3")),
+  show_legend = TRUE
+)
+colnames(exp_scale) <- str_replace_all(colnames(exp_scale), "[\\._]", "-")
+p <- Heatmap(
+  exp_scale,
+  name = "Z-score",
+  col = colorRamp2(c(-4, 0, 4), c("#5686C390", "white", "#e6311890")),
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  left_annotation = ha_row,  # 替换原来的 right_annotation
+  row_dend_side = "right",
+  column_names_side = "top",
+  column_names_rot = 0,
+  column_names_gp = gpar(fontsize = 10),
+  column_names_max_height = unit(4, "cm"),
+  width = unit(10, "cm"),  # 原代码中 123cm 过大，改为 12cm
+  height = unit(8, "cm"),
+  heatmap_legend_param = list(
+    title_position = "topcenter",
+    legend_direction = "horizontal"
+  )
+)
+p
+
+
+##GO 
+library(tidyverse)
+library(rio)  
+library(clusterProfiler)
+library(org.Rn.eg.db) 
+library(ggpubr)  
+library(patchwork) 
+library(future)  
+library(biomaRt)  
+
+data <- read.csv("diff_expr_result.csv")
+head(data)
+data$gene_id <- data$X 
+data <- data %>% 
+  mutate(group = case_when(
+    log2FoldChange > 1 & pvalue < 0.05 ~ "UP",  
+    log2FoldChange < - & pvalue < 0.05 ~ "DOWN",  
+    TRUE ~ "notsig"
+  ))
+table(data$group)
+filtered_data <- data[data$group %in% c("UP", "DOWN"), ]
+print(filtered_data)
+ensembl_gene_id <- filtered_data$gene_id
+head(ensembl_gene_id)
+length(ensembl_gene_id)
+
+ensembl <- useMart("ensembl", dataset = "rnorvegicus_gene_ensembl")  
+mapped_genes_biomart <- getBM(
+  attributes = c("ensembl_gene_id", "entrezgene_id"),
+  filters = "ensembl_gene_id",
+  values = ensembl_gene_id,
+  mart = ensembl
+)
+
+print(mapped_genes_biomart)
+mapped_genes_biomart <- mapped_genes_biomart[!is.na(mapped_genes_biomart$entrezgene_id), ]
+entrez_ids <- mapped_genes_biomart$entrezgene_id
+go_results <- enrichGO(
+  gene = entrez_ids,
+  OrgDb = org.Rn.eg.db,  
+  ont = "all",  
+  pvalueCutoff = 0.05,  
+  readable = TRUE  
+)
+print(head(go_results))
+
+go_results <- setReadable(go_results, OrgDb = org.Rn.eg.db, keyType = "ENTREZID")
+print(head(go_results))
+go_df <- go_results@result %>%
+  arrange(desc(RichFactor), desc(Count), p.adjust)
+rio::export(go_df, "GO.csv")
+
+
+
+##GO bar plot
+library(tidyverse)
+library(RColorBrewer)
+library(MetBrewer)
+library(ggnewscale)
+library(ggplot2)
+
+df <- read.csv("GO_selected.csv") 
+df$Description <- factor(df$Description,levels = df$Description %>% unique() %>% rev())
+df_long <- df %>%
+  separate_rows(geneID, sep = "/") %>%  
+  rename(gene = geneID) 
+DEG <- read.csv("diff_expr_result.csv")
+library(dplyr)
+df_final <- df_long %>% 
+  left_join(DEG, by = "gene") 
+df_final <- df_final[,-c(14:16,18:20,22)]
+df_final <- df_final %>%
+  mutate(
+    regulation = case_when(
+      log2FoldChange > 0 ~ "up",
+      log2FoldChange < 0 ~ "down",
+      TRUE ~ "none"
+    )
+  )
+go_stats <- df_final %>%
+  group_by(Description, regulation) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = regulation, values_from = count, values_fill = 0)
+df <- df %>% 
+  left_join(go_stats, by = "Description")
+
+df %>% 
+  ggplot(aes(x = Count, y = Description)) +
+  geom_segment(
+    aes(x = 0, xend = up, yend = Description, color = ONTOLOGY),
+    size = 6,
+    show.legend = FALSE,
+    alpha = 0.5,
+    color = "#E64B35" 
+  ) +
+  geom_segment(
+    aes(x = 0, xend = -down, yend = Description, color = ONTOLOGY),
+    size = 6,
+    show.legend = FALSE,
+    alpha = 0.5,
+    color = "#4DBBD5"  
+  ) +
+  geom_text(
+    aes(x = 0, y = Description, label = Description),
+    vjust = 0.5,
+    hjust = 0,
+    size = 2.8,
+    color = "black"
+  ) +
+  new_scale_color() +
+  geom_point(
+    aes(size = Count, color = p.adjust, fill = p.adjust),
+    shape = 19
+  ) +
+  scale_fill_gradientn(colors = met.brewer("Cassatt1")) +
+  scale_color_gradientn(colors = met.brewer("Cassatt1")) +
+  guides(size = guide_legend(title = "Count")) +
+  scale_x_continuous(expand = c(0.01, 0.005)) +
+  theme_classic() +
+  coord_cartesian(clip = "off") +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(color = "black", face = "bold"),
+    axis.ticks.y = element_blank(),
+    panel.background = element_blank(),
+    panel.spacing.y = unit(0, "cm"),
+    legend.key = element_blank(),
+    legend.title = element_text(color = "black", size = 9),
+    legend.text = element_text(color = "black", size = 9),
+    legend.spacing.x = unit(0.1, "cm"),
+    legend.key.width = unit(0.5, "cm"),
+    legend.key.height = unit(0.5, "cm"),
+    legend.background = element_blank(),
+    legend.box.margin = margin(1, 1, 1, 1),
+    legend.position = c(0.9, 0.4),
+    plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm")
+  )
+
+
+
+library(ggplot2)
+library(MetBrewer)
+library(ggnewscale)
+
+max_up <- max(df$up, na.rm = TRUE)
+max_down <- max(df$down, na.rm = TRUE)
+total_max <- max(df$up + df$down, na.rm = TRUE)
+point_offset <- total_max * 0.1
+x_limits <- c(-0.2 * total_max, total_max + point_offset + 1)  
+library(ggplot2)
+library(MetBrewer)
+library(ggnewscale)
+
+max_up <- max(df$up, na.rm = TRUE)
+max_down <- max(df$down, na.rm = TRUE)
+total_max <- max(df$up + df$down, na.rm = TRUE)
+x_limits <- c(-0.0005 * total_max, total_max * 1.1)  
+
+df %>% 
+  ggplot(aes(y = Description)) +
+  geom_segment(
+    aes(x = 0, xend = down, yend = Description),
+    size = 6,
+    alpha = 0.5,
+    color = "#137CBD"
+  ) +
+  geom_segment(
+    aes(x = down, xend = down + up, yend = Description),
+    size = 6,
+    alpha = 0.5,
+    color = "#B8DFC6"
+  ) +
+  geom_text(
+    aes(x = 1,  # 从左边5%的位置开始
+        label = Description),
+    color = "black",
+    size = 3,
+    fontface = "bold",
+    hjust = 0,  # 左对齐
+    check_overlap = TRUE
+  ) +
+  new_scale_color() +
+  geom_point(
+    aes(x = down + up,
+        size = up + down,
+        color = p.adjust),
+    shape = 19
+  ) +
+  scale_color_gradientn(colors = met.brewer("Cassatt1")) +
+  guides(size = guide_legend(title = "Total Count")) +
+  scale_x_continuous(
+    limits = x_limits,
+    expand = c(0.01, 0.005),
+    breaks = seq(0, total_max, by = ceiling(total_max/5))
+  ) +
+  theme_classic() +
+  coord_cartesian(clip = "off") +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(color = "black", face = "bold"),
+    axis.ticks.y = element_blank(),
+    panel.background = element_blank(),
+    legend.key = element_blank(),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 9),
+    legend.position = c(0.9, 0.4),
+    plot.margin = margin(0.5, 0.5, 0.5, 0.5, "cm")
+  )
+
+
+##GO circle plot
+
+library(circlize)
+library(tidyverse)
+library(RColorBrewer)
+
+
+pdata <- read.csv("GO_selected.csv")
+head(pdata)
+pdata <-pdata[c(4,7,11,12), c(3,12)]
+colnames(pdata) <- c("pathway","gene")
+pdata <- pdata %>%
+  mutate(gene = str_split(gene, "/")) %>%
+  unnest(gene)
+pathway_colors <- c("#bfd6f5", "#7fbcec", "#ddd69f", "#ee404a", "#95D5B2")[1:length(unique(pdata$pathway))]
+names(pathway_colors) <- unique(pdata$pathway)
+
+gene_colors <- colorRampPalette(c("#8dd3c7", "#feffb3", "#fb8072"))(length(unique(pdata$gene)))
+names(gene_colors) <- unique(pdata$gene)
+circos.par(
+  start.degree = 90,
+  gap.degree = c(rep(3, length(pathway_colors)),                   
+rep(1, length(gene_colors))),    
+  track.margin = c(0.02, 0.02),                 
+  canvas.ylim = c(-1.1, 1.1)                   
+)
+chordDiagram(
+  x = pdata,
+  grid.col = c(pathway_colors, gene_colors),
+  transparency = 0.3,                          
+  directional = 1,
+  direction.type = "diffHeight",
+  diffHeight = -0.04,                          
+  annotationTrack = c("grid", "axis"),         
+  annotationTrackHeight = c(0.06, 0.06),        
+  preAllocateTracks = list(
+    list(track.height = 0.03),                 
+    list(track.height = 0.031)                  
+  ),
+  link.sort = TRUE,
+  link.decreasing = TRUE,
+  link.lwd = 1.5,                              
+  link.lty = 1                                 
+)
+circos.track(
+  track.index = 1,
+  panel.fun = function(x, y) {
+    if(CELL_META$sector.index %in% names(gene_colors)) {
+      gene_length <- nchar(CELL_META$sector.index)
+      font_size <- ifelse(gene_length > 10, 0.5,
+                          ifelse(gene_length > 6, 0.6, 0.7))
+      
+      circos.text(
+        CELL_META$xcenter, 
+        CELL_META$ylim[1], 
+        CELL_META$sector.index,
+        labels = toupper(CELL_META$sector.index),  
+        facing = "clockwise",
+        niceFacing = TRUE,
+        adj = c(0, 0.5),
+        cex = font_size,
+        col = "black",
+        font = 1                              
+      )
+    }
+  },
+  bg.border = NA
+)
+legend("right", 
+       legend = names(pathway_colors),
+       fill = pathway_colors,
+       border = NA,
+       title = "GO Pathways",
+       title.cex = 0.9,
+       cex = 0.75,
+       ncol = 1,
+       bty = "n",
+       x.intersp = 0.8,
+       y.intersp = 1.2,
+       text.width = 0.1)
+circos.clear()
+
