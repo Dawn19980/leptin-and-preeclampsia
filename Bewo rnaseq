@@ -1,0 +1,727 @@
+##Bewo bulk RNAseq
+
+library(ggplot2)
+library(ggrepel)
+
+data0<-read.csv("total_count.csv")
+library(dplyr)
+data1 <- data0 %>% select(c(1,3,7,11,15,5,9,13,17)) 
+transposed_data <- t(data1)
+transposed_data <- as.data.frame(transposed_data)
+col_names <- transposed_data[1, ]
+col_names <- as.character(col_names)
+col_names <- make.unique(col_names)
+transposed_data <- transposed_data[-1, ]
+colnames(transposed_data) <- col_names
+transposed_data$group <- c("siCtrl+Forsklin","siCtrl+Forsklin","siCtrl+Forsklin","siCtrl+Forsklin","siLEP+Forsklin","siLEP+Forsklin","siLEP+Forsklin","siLEP+Forsklin")
+data <- transposed_data %>% mutate(across(1: 62656, as.numeric))
+
+
+constant_cols <- sapply(data[,-62657], function(x) length(unique(x)) == 1 || all(x == 0))
+data_filtered <- data[,-62657][, !constant_cols]
+data.pca<-prcomp(data_filtered,center=TRUE,scale.=TRUE)
+df1 <- data.pca$x 
+df1 <- as.data.frame(df1)
+summary(data.pca)
+summ1 <- summary(data.pca)
+xlab1 <- paste0("PC1(",round(summ1$importance[2,1]*100,2),"%)")
+ylab1 <- paste0("PC2(",round(summ1$importance[2,2]*100,2),"%)")
+library(ggrepel)
+p.label <- rownames(df1)
+
+
+p <-ggplot(data = df1, aes(x = PC1, y = PC2, color = data$group)) +
+  ggforce::geom_mark_ellipse(aes(color = data$group), fill = NA, alpha = 0.35) +  
+  geom_point(size = 3.5) +  
+  labs(x = xlab1, y = ylab1, color = "Group") + 
+  guides(fill = "none") +  
+  scale_color_manual(
+    values = c("#5686C3", "#75C500"),  
+    labels = c("C" = "HP", "P" = "PE") 
+  ) +
+  theme_classic() +  
+  theme(
+    axis.line = element_line(colour = "black"), 
+    axis.title = element_text(color = "black", face = "bold"),  
+    panel.grid.major = element_line(),  
+    panel.grid.minor = element_line(),  
+    panel.background = element_blank(),  
+    axis.text = element_text(color = "black", size = 10, face = "bold"),  
+    legend.position = "bottom" ,
+    aspect.ratio = 1  
+  ) +
+  coord_cartesian(xlim = c(-130, 130),  
+                  ylim = c(-140, 120)) + 
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", size = 0.5) +  
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 0.5)  
+p
+library(ggExtra)
+p <- ggMarginal(p,type="density",groupColour=F, groupFill=T)
+p
+
+
+
+#DEG
+library(tidyverse)  
+library(ggrepel)    
+library(ggfun)      
+library(ggnewscale) 
+library(dplyr)
+library(ggplot2)
+
+
+siLEPFK_siCtrlFK <- read.csv("siLEPFK_siCtrlFK.csv")
+siLEPFK_siCtrlFK <- siLEPFK_siCtrlFK[, c(12, 13, 17)]  
+siLEPFK_siCtrlFK$group <- "siCtrl+FSK\nvs\nsiLEP+FSK"
+
+siLEPFK_siLEP <- read.csv("siLEPFK_siLEP.csv")
+siLEPFK_siLEP <- siLEPFK_siLEP[, c(12, 13, 17)]
+siLEPFK_siLEP$group <- "siLEP\nvs\nsiLEP+FSK"
+
+siLEP_siCtrl <- read.csv("siLEP_siCtrl.csv")
+siLEP_siCtrl <- siLEP_siCtrl[, c(12, 13, 17)]
+siLEP_siCtrl$group <- "siCtrl\nvs\nsiLEP"
+
+siCtrlFK_siCtrl <- read.csv("siCtrlFK_siCtrl.csv")
+siCtrlFK_siCtrl <- siCtrlFK_siCtrl[, c(12, 13, 17)]
+siCtrlFK_siCtrl$group <- "siCtrl\nvs\nsiCtrl+FSK"
+
+
+group_order <- c("siCtrl\nvs\nsiCtrl+FSK", "siCtrl\nvs\nsiLEP", "siLEP\nvs\nsiLEP+FSK", "siCtrl+FSK\nvs\nsiLEP+FSK")
+all_deg <- rbind(siCtrlFK_siCtrl, siLEP_siCtrl, siLEPFK_siLEP, siLEPFK_siCtrlFK) %>%
+  mutate(
+    group = factor(group),  
+    group_code = factor(as.integer(group), levels = 1:4)  
+  )
+
+all_deg$Log2FoldChange <- as.numeric(all_deg$Log2FoldChange)
+all_deg$Log2FoldChange[is.na(all_deg$Log2FoldChange) | is.infinite(all_deg$Log2FoldChange) | is.nan(all_deg$Log2FoldChange)] <- 0
+all_deg$pval <- as.numeric(all_deg$pval)
+all_deg$pval[is.na(all_deg$pval) | is.infinite(all_deg$pval) | is.nan(all_deg$pval)] <- 0
+
+all_deg <- all_deg %>%
+  rename(
+    log2FC = Log2FoldChange,
+    PValue = pval,
+    Name = GeneName,
+    Cluster = group  
+  ) %>%
+  select(Name, log2FC, PValue, Cluster, group_code)  
+
+mutiVolcano <- function(
+    df,                  
+    p_cutoff = 0.05,    
+    lfc_cutoff = 2,      
+    group_labels = c("sigUp", "sigDown","notsig"), 
+    point_color = c("#D7191C", "#2C7BB6","grey"),  
+    label_text_color = "black",  
+    label_bg_color = "white",    
+    label_border_color = "black",
+    bar_fill = "#efefef",        
+    point_size = 1,            
+    label_type = "1",           
+    label_num = 3,               
+    label_names = NULL,       
+    tile_color = NULL,          
+    group_order = unique(df$Cluster)  
+) {
+  
+  df_clean <- df %>%
+    filter(!is.na(log2FC), !is.na(PValue), !is.na(Name), !is.na(Cluster), !is.na(group_code)) %>%
+    mutate(
+      Group = case_when(
+        PValue < p_cutoff & log2FC >= lfc_cutoff ~ group_labels[1],  
+        PValue < p_cutoff & log2FC <= -lfc_cutoff ~ group_labels[2], 
+        TRUE ~ group_labels[3] 
+      ),
+      Group = factor(Group, levels = group_labels),
+      Cluster = factor(Cluster, levels = group_order),
+      group_code = factor(group_code, levels = unique(df$group_code))
+    ) %>%
+    filter(abs(log2FC) <= 10) 
+
+  code_cluster_map <- df_clean %>%
+    distinct(group_code, Cluster) %>%
+    arrange(group_code)
+
+  df_bar <- df_clean %>%
+    group_by(group_code) %>%
+    summarise(
+      lfc_min = min(log2FC, na.rm = TRUE),
+      lfc_max = max(log2FC, na.rm = TRUE),
+      .groups = "drop"  
+    ) %>%
+    left_join(code_cluster_map, by = "group_code")
+
+  df_jitter <- df_clean %>%
+    mutate(jitter_x = jitter(as.numeric(group_code), factor = 2))
+  
+  if (label_type == "1") {
+    df_label_up <- df_jitter %>%
+      filter(!str_starts(Name, "ENSG")) %>% 
+      filter(Group == group_labels[1]) %>%  
+      group_by(Cluster, group_code) %>%
+      slice_max(log2FC, n = label_num, with_ties = FALSE) %>%
+      ungroup()
+    df_label_down <- df_jitter %>%
+      filter(!str_starts(Name, "ENSG")) %>% 
+      filter(Group == group_labels[2]) %>%  
+      group_by(Cluster, group_code) %>%
+      slice_min(log2FC, n = label_num, with_ties = FALSE) %>%
+      ungroup()
+    df_label <- bind_rows(df_label_up, df_label_down)    
+  }   
+
+  p <- ggplot() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "#666666", linewidth = 0.6) +
+    geom_hline(yintercept = lfc_cutoff, linetype = "dashed", color = "#666666", linewidth = 0.5) +
+    geom_hline(yintercept = -lfc_cutoff, linetype = "dashed", color = "#666666", linewidth = 0.5) +
+    geom_hline(yintercept = 5, linetype = "dashed", color = "#666666", linewidth = 0.5) +
+    geom_hline(yintercept = -5, linetype = "dashed", color = "#666666", linewidth = 0.5) +
+    geom_col(
+      data = df_bar, aes(x = group_code, y = lfc_max),
+      fill = bar_fill, width = 0.8, alpha = 0.7
+    ) +
+    geom_col(
+      data = df_bar, aes(x = group_code, y = lfc_min),
+      fill = bar_fill, width = 0.8, alpha = 0.7
+    ) +
+    geom_point(
+      data = df_jitter, aes(x = jitter_x, y = log2FC, color = Group),
+      size = point_size, alpha = 0.6, show.legend = TRUE
+    ) +
+    geom_tile(
+      data = code_cluster_map, aes(x = group_code, y = 0, fill = Cluster),
+      color = "black",
+      height = lfc_cutoff * 1.5,
+      width = 0.9,
+      alpha = 1,
+      show.legend = FALSE
+    ) +
+    geom_text(
+      data = code_cluster_map,
+      aes(x = group_code, y = 0, label = Cluster),
+      size = 8,               
+      color = "black",          
+      fontface = "plain",       
+      lineheight = 0.8,         
+      hjust = 0.5,              
+      vjust = 0.5               
+    ) +
+      scale_color_manual(values = point_color, name = "Significant Expression") +
+    scale_fill_manual(values = tile_color, guide = NULL, limits = code_cluster_map$Cluster) +
+    labs(x = element_blank(), y = "log2FC") +
+    scale_y_continuous(
+      n.breaks = 7,
+      breaks = c(-5, -lfc_cutoff, 0, lfc_cutoff, 5),
+      expand = expansion(add = c(0.5, 0.5))
+    ) +
+    scale_x_discrete(limits = levels(df_clean$group_code), expand = expansion(add = 0.5)) +
+    theme_classic() +
+    theme(
+      legend.position = "top",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 20),
+      axis.text.y = element_text(size = 24),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.title.y = element_text(size = 26, face = "plain", margin = margin(r = 10)),
+      plot.margin = margin(5, 5, 5, 5, "pt")
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 3)))
+  return(p)
+}
+
+
+library(tidyverse)
+library(ggrepel)
+library(RColorBrewer)
+
+tile_colors <- c(
+  "siCtrl\nvs\nsiCtrl+FSK" = "#D7B0B0",
+  "siCtrl\nvs\nsiLEP" = "#C8DEF9",
+  "siLEP\nvs\nsiLEP+FSK" = "#CBCBE4",
+  "siCtrl+FSK\nvs\nsiLEP+FSK" = "#FFE0C0"
+)
+names(tile_colors) <- group_order
+
+p <- mutiVolcano(
+  df = all_deg,                  
+  p_cutoff = 0.05,               
+  lfc_cutoff = 2,                
+  group_labels = c("up-regulated", "down-regulated", "not significant"),  
+  point_color = c("#D7191C", "#2C7BB6", "#99999970"),  
+  label_text_color = "black",    
+  label_bg_color = "white",      
+  label_border_color = "black",  
+  bar_fill = "#efefef",          
+  point_size = 1,                
+  label_type = "1",              
+  label_num = 3,                 
+  tile_color = tile_colors       
+)
+
+print(p)
+
+
+
+#venn
+library(ggvenn)
+library(tidyverse)
+library(dplyr)
+library(VennDiagram)
+
+process_data <- function(file_path) {
+  data <- read.csv(file_path)
+  data %>%
+    mutate(
+      Log2FoldChange = as.numeric(Log2FoldChange)  
+    ) %>%
+    filter(
+      !is.na(Log2FoldChange),  
+      abs(Log2FoldChange) >= 2,
+      pval < 0.05 
+    )
+}
+
+data1 <- process_data("siCtrlFK_siCtrl.csv")
+data2 <- process_data("siLEPFK_siCtrlFK.csv")
+data3 <- process_data("siLEP_siCtrl.csv")
+data4 <- process_data("siLEPFK_siLEP.csv")
+
+A <- as.character(data1$Gene)
+B <- as.character(data2$Gene)
+C <- as.character(data3$Gene)
+D <- as.character(data4$Gene)
+
+venn_dataAB <- list("siCtrl\nvs\nsiCtrl+FSK" = A,  "siCtrl+FSK\nvs\nsiLEP+FSK" = B)
+venn_dataAC <- list("siCtrl\nvs\nsiCtrl+FSK" = A,  "siCtrl\nvs\nsiLEP" = C)
+venn_dataBD <- list("siCtrl+FSK\nvs\nsiLEP+FSK" = B, "siLEP\nvs\nsiLEP+FSK" = D)
+venn_dataCD <- list("siCtrl\nvs\nsiLEP" = C, "siLEP\nvs\nsiLEP+FSK" = D)
+
+draw_venn <- function(venn_data, fill_colors, output_file = NULL) {
+  venn.plot <- venn.diagram(
+    x = venn_data,
+    category.names = names(venn_data),
+    filename = output_file,  # 保存为文件
+    output = TRUE,
+    fill = fill_colors,
+    alpha = 0.5,
+    cex = 5,
+    cat.cex = 5,
+    cat.pos = c(-10, 30),
+    cat.dist = c(0.1, 0.15),
+    col = "white",
+    lwd = 1
+  )
+  if (is.null(output_file)) {
+    grid.draw(venn.plot)
+  }
+}
+
+venn_list <- list(
+  list(data = venn_dataAB, colors = c("#D7B0B0", "#FFE0C0"), name = "AB"),
+  list(data = venn_dataAC, colors = c("#D7B0B0", "#C8DEF9"), name = "AC"),
+  list(data = venn_dataBD, colors = c("#FFE0C0", "#CBCBE4"), name = "BD"),
+  list(data = venn_dataCD, colors = c("#C8DEF9", "#CBCBE4"), name = "CD"))
+
+
+for (venn in venn_list) {
+  venn_plot <- ggvenn(
+    venn$data, 
+    fill_color = venn$colors, 
+    stroke_size = 0.5
+  )
+  
+  file_name <- paste0("venn_plot_", venn$name, ".pdf")
+  
+  ggsave(
+    filename = file_name,  # 文件名
+    plot = venn_plot,      # 绘制的图形对象
+    device = "pdf",        # 导出格式为 PDF
+    width = 8,             # PDF 宽度（单位：英寸）
+    height = 10,            # PDF 高度（单位：英寸）
+    dpi = 300              # 分辨率为 300 DPI
+  )
+  
+  cat("Saved:", file_name, "\n")
+}
+
+
+##FC-FC
+library(tidyverse)
+library(ggrepel)
+
+AB_intersect <- intersect(A, B)
+data1_subset <- data1[data1$Gene %in% AB_intersect, c("Gene", "GeneName", "Log2FoldChange", "pval", "Up.Down")]
+data2_subset <- data2[data2$Gene %in% AB_intersect, c("Gene", "GeneName", "Log2FoldChange", "pval", "Up.Down")]
+colnames(data1_subset) <- paste0(colnames(data1_subset), "_1")
+colnames(data2_subset) <- paste0(colnames(data2_subset), "_2")
+merged_data <- merge(data1_subset, data2_subset, by.x = "Gene_1", by.y = "Gene_2", all = TRUE)
+merged_data$Regulation <- paste(merged_data$Up.Down_2, merged_data$Up.Down_1, sep = "-")
+merged_data$Change <- as.numeric(merged_data$Log2FoldChange_2) - as.numeric(merged_data$Log2FoldChange_1)
+
+dat <- merged_data %>%
+  select("GeneName_1", "Log2FoldChange_1", "pval_1", 
+         "Log2FoldChange_2", "pval_2", "Regulation", "Change") %>%
+  mutate(
+    Log2FoldChange_1 = as.numeric(Log2FoldChange_1),
+    Log2FoldChange_2 = as.numeric(Log2FoldChange_2),
+    pval_1 = as.numeric(pval_1),
+    pval_2 = as.numeric(pval_2),
+    pval_1 = ifelse(pval_1 < 1e-300, 1e-300, pval_1), 
+    pval_2 = ifelse(pval_2 < 1e-300, 1e-300, pval_2),
+    neg_log10_pval1 = -log10(pval_1),
+    neg_log10_pval2 = -log10(pval_2),
+    mean_neg_log10_pval = pmin((neg_log10_pval1 + neg_log10_pval2) / 2, 20),  
+    significant_1 = pval_1 < 0.05,
+    significant_2 = pval_2 < 0.05,
+    significance_group = case_when(
+      significant_1 & significant_2 ~ "Both significant",
+      significant_1 & !significant_2 ~ "Only first significant",
+      !significant_1 & significant_2 ~ "Only second significant",
+      TRUE ~ "Neither significant"
+    )
+  ) %>%
+  filter(
+    !is.na(Log2FoldChange_1),
+    !is.na(Log2FoldChange_2),
+    !is.na(pval_1),
+    !is.na(pval_2),
+    abs(Log2FoldChange_1) <= 10,
+    abs(Log2FoldChange_2) <= 10
+  )
+target_genes_list <- c("NOS2", "RAC2", "DUOXA1", "DUOXA2", "DUOX2", 
+                       "LEP")
+top_genes <- dat %>%
+  filter(GeneName_1 %in% target_genes_list) %>%
+  mutate(is_target = TRUE)  
+dat <- dat %>%
+  mutate(is_target = ifelse(GeneName_1 %in% target_genes_list, TRUE, FALSE))
+regulation_colors <- c(
+  "up-up" = "#3A6BAF",
+  "up-down" = "#6A6ACB",
+  "down-up" = "#E49B0F",
+  "down-down" = "#9B2226"
+)
+target_gene_color <- "black"  
+target_gene_size <- 3           
+
+x_quantile <- quantile(dat$Log2FoldChange_1, c(0.025, 0.975))
+x_min <- floor(x_quantile[1] * 1.1)
+x_max <- ceiling(x_quantile[2] * 1.1)
+y_quantile <- quantile(dat$Log2FoldChange_2, c(0.025, 0.975))
+y_min <- floor(y_quantile[1] * 1.1)
+y_max <- ceiling(y_quantile[2] * 1.1)
+
+p <- ggplot(dat, aes(x = Log2FoldChange_1, y = Log2FoldChange_2)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray70", linewidth = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray70", linewidth = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "gray50", linewidth = 0.5) +
+    geom_point(
+    data = dat %>% filter(!is_target),
+    aes(color = Regulation, size = mean_neg_log10_pval, alpha = significance_group),
+    show.legend = TRUE
+  ) +
+    geom_point(
+    data = dat %>% filter(is_target),
+    color = target_gene_color,
+    size = target_gene_size,
+    alpha = 0.4,
+    show.legend = FALSE
+  ) +
+    geom_text_repel(
+    data = top_genes,
+    aes(label = GeneName_1),
+    color = target_gene_color,
+    #fontface = "bold",
+    size = 7,
+    box.padding = unit(0.8, "lines"),
+    point.padding = unit(1, "lines"),
+    segment.color = target_gene_color,
+    segment.size = 0.4,
+    max.overlaps = 50,  
+    force = 3,          
+    force_pull = 1,     
+    nudge_x = ifelse(top_genes$Log2FoldChange_1 > x_max/2, -1.5, 1.5),
+    nudge_y = ifelse(top_genes$Log2FoldChange_2 > y_max/2, -1.5, 1.5)
+  ) +
+  xlim(x_min, x_max) +
+  ylim(y_min, y_max) +
+  scale_color_manual(values = regulation_colors, name = "Regulation Pattern") +
+  scale_size_continuous(
+    range = c(4, 8),  
+    name = "Mean -log10(P value)",
+    breaks = seq(0, floor(max(dat$mean_neg_log10_pval)), 4),
+    labels = sprintf("%.1f", seq(0, floor(max(dat$mean_neg_log10_pval)), 4))
+  ) +
+  scale_alpha_manual(
+    values = c(
+      "Both significant" = 0.6,   
+      "Only first significant" = 0.4,
+      "Only second significant" = 0.4,
+      "Neither significant" = 0.2  
+    ),
+    guide = "none" 
+  ) +
+    theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 30, margin = margin(t = 10)),
+    axis.title.y = element_text(size = 30, margin = margin(r = 10)),
+    axis.text.x = element_text(size = 28, color = "black"),
+    axis.text.y = element_text(size = 28, color = "black"),
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.title = element_text(size = 24),
+    legend.text = element_text(size = 24),
+    legend.key.width = unit(3, "cm"),     panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(color = "gray90", linewidth = 0.3),
+    plot.margin = margin(15, 15, 15, 15)
+  ) +
+  labs(
+    x = "Log2FC (siCtrl vs siCtrl+FSK)",
+    y = "Log2FC (siCtrl+FSK vs siLEP+FSK)",
+    color = "Regulation Pattern",
+    size = "Mean -log10(P value)"
+  ) +
+  guides(
+    color = guide_legend(order = 1, title.position = "top", title.hjust = 0.5),
+     size = guide_legend(order = 2, title.position = "top", title.hjust = 0.5)
+  )
+print(p)
+
+#go
+library(tidyverse)
+library(rio)  
+library(clusterProfiler)
+library(org.Hs.eg.db) 
+library(ggpubr)   
+library(patchwork)
+library(future)  
+library(dplyr)
+
+process_data <- function(file_path) {
+  data <- read.csv(file_path)
+  data %>%
+    mutate(
+      Log2FoldChange = as.numeric(Log2FoldChange) 
+    ) %>%
+    filter(
+      !is.na(Log2FoldChange),  
+      abs(Log2FoldChange) >= 2,
+      pval < 0.05 
+    )
+}
+
+data1 <- process_data("siCtrlFK_siCtrl.csv")
+data2 <- process_data("siLEPFK_siCtrlFK.csv")
+A <- as.character(data1$Gene)
+B <- as.character(data2$Gene)
+intersect_genes <- intersect(A, B)
+length(intersect_genes)
+ensembl_gene_id <- intersect_genes
+head(ensembl_gene_id)
+length(ensembl_gene_id)
+
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mapped_genes <- getBM(
+  attributes = c("ensembl_gene_id", "entrezgene_id"),
+  filters = "ensembl_gene_id",
+  values = ensembl_gene_id,
+  mart = ensembl
+)
+mapped_genes <- mapped_genes[!is.na(mapped_genes$entrezgene_id), ]
+unique_mapped <- mapped_genes[!duplicated(mapped_genes$ensembl_gene_id), ]
+entrez_ids <- unique_mapped$entrezgene_id
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+go_results <- enrichGO(
+  gene = entrez_ids,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP", 
+  pvalueCutoff = 1,
+  readable = TRUE 
+)
+print(head(go_results))
+go_results <- setReadable(go_results, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+go_df <- go_results@result %>%
+  arrange(desc(RichFactor), desc(Count), p.adjust) 
+rio::export(go_df, "go(AB_commonDEGFC2).csv")
+
+library(tidyverse)
+library(ggsankey)
+library(viridis)
+library(dplyr)
+
+go_results <- as.data.frame(go_results)
+top10_go <- go_results %>%
+  arrange(pvalue) %>% 
+  head(10)           
+print(top10_go[, c("ID", "Description", "pvalue", "Count")])
+
+data <- top10_go %>%
+  dplyr::select(Description, geneID, pvalue) %>%  
+  dplyr::mutate(
+    Description = factor(
+      Description,
+      levels = unique(Description[order(pvalue)])  
+  )) %>%
+  dplyr::select(Description, geneID) %>%
+  as.data.frame()
+
+data$geneID <- as.character(data$geneID)  
+data <- data %>%
+  filter(!is.na(geneID) & geneID != "")  
+
+data$geneID_list <- strsplit(data$geneID, "/")
+df0 <- data.frame(
+  Description = rep(data$Description, sapply(data$geneID_list, length)),
+  gene = unlist(data$geneID_list),
+  stringsAsFactors = FALSE
+)
+unique_descriptions <- unique(df0$Description)
+description_colors <- setNames(
+  c("#699ECA", "#699ECA60", "#F898CB","#4DAF4A70","#FBEA2E",
+    "#FFCB5B","#8A7355","#FF8C00","#731A7360","#848484"),
+  unique_descriptions
+)
+
+unique_genes <- unique(df0$gene)
+n_genes <- length(unique_genes)
+
+go_base_colors <- description_colors[!grepl("[0-9A-Fa-f]{2}$", description_colors)]
+core_go_hues <- c("#699ECA", "#F898CB", "#4DAF4A", "#FFCB5B", "#731A73")  
+
+gene_custom_colors <- setNames(
+  colorRampPalette(core_go_hues)(n_genes) %>%  
+    lapply(function(col) {
+      rgb_val <- col2rgb(col)/255  
+      desat_val <- rgb_val * 0.8 + 0.2 * mean(rgb_val)  
+      bright_val <- pmin(desat_val + 0.1, 1)  
+      rgb(bright_val[1], bright_val[2], bright_val[3], alpha = 0.85)  
+    }) %>% unlist(),
+  nm = unique_genes
+)
+par(mfrow = c(2, 1), mar = c(1, 4, 1, 1))
+barplot(rep(1, length(description_colors)), col = description_colors, main = "GO_color")
+barplot(rep(1, length(gene_custom_colors)), col = gene_custom_colors, main = "gene_color")
+all_colors1 <- c(description_colors, gene_custom_colors)
+
+sankey_data1 <- df0 %>%
+  make_long(gene, Description) %>%  
+  mutate(
+    node_color = case_when(
+      node %in% names(description_colors) ~ description_colors[node],  
+      node %in% names(gene_custom_colors) ~ gene_custom_colors[node],
+      TRUE ~ "gray80"  
+    ),
+    flow_color = case_when(
+      x == "gene" ~ alpha(gene_custom_colors[node], 0.1),  
+      x == "Description" ~ NA,  
+      TRUE ~ alpha("gray50", 0.1)
+    )
+  )
+
+p1 <- ggplot(
+  sankey_data1, 
+  aes(
+    x = x, 
+    next_x = next_x, 
+    node = node, 
+    next_node = next_node, 
+    fill = node_color,  
+    label = node, 
+    color = flow_color  
+  )
+) +
+  geom_sankey(flow.alpha = 0.4, node.color = "white", node.width = 0.15) +
+  geom_sankey_text(size = 2, color = "black", hjust = 1, check_overlap = TRUE) +
+  theme_void() +
+  theme(legend.position = "none") +  
+  scale_fill_identity() + 
+  scale_color_identity()   # flow颜色直接使用flow_color列的颜色值
+print(p1)
+
+top10_go_plot <- top10_go %>%
+  mutate(
+    neg_log10_p = -log10(pvalue),  
+    Description = factor(Description,  
+                         levels = rev(Description[order(neg_log10_p)]))
+  )
+
+top10_go_plot <- top10_go %>%
+  mutate(
+    neg_log10_p = -log10(pvalue),  
+    Description = factor(Description, 
+                         levels = Description[order(pvalue)])
+  )
+
+top10_go_plot <- top10_go %>%
+  mutate(
+    neg_log10_p = -log10(pvalue), 
+    Description = factor(
+      x = Description,  
+      levels = c(
+        "anatomical structure maturation",
+        "developmental maturation",   
+        "hydrogen peroxide biosynthetic process",
+        "hydrogen peroxide metabolic process",   
+        "positive regulation of reactive oxygen species metabolic process",
+        "reactive oxygen species metabolic process",                                      
+        "regulation of hydrogen peroxide metabolic process",               
+        "regulation of reactive oxygen species metabolic process",                        
+        "thyroid hormone generation",      
+        "thyroid hormone metabolic process"     
+      ),
+      ordered = TRUE  
+    )
+  )
+
+p_bubble <- ggplot(
+  data = top10_go_plot, 
+  aes(
+    x = neg_log10_p,          
+    y = Description,          
+    size = Count,             
+    color = neg_log10_p      
+  )
+) +
+  geom_point(shape = 19, stroke = 1.2, alpha = 0.8) +
+  scale_color_gradientn(
+    colours = brewer.pal(5, "YlOrRd"),  
+    name = expression(-log[10](p-value)),  
+    guide = guide_colorbar(title.position = "top", title.hjust = 0.5)  
+  ) +
+  scale_size_continuous(
+    range = c(5, 10),  
+    name = "Gene Count", 
+    guide = guide_legend(title.position = "top", title.hjust = 0.5)
+  ) +
+  labs(
+    x = expression(-log[10](p-value)),  
+    y = NULL  
+  ) +
+    theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold", margin = margin(t = 10)),
+    axis.text.y = element_text(size = 10, color = "black"),  
+    axis.text.x = element_text(size = 10, color = "black"),  
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.box = "vertical",
+    legend.margin = margin(b = 10),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9),
+    plot.margin = margin(10, 20, 10, 10, unit = "mm")
+  )
+print(p_bubble)
+print(p)
+
+
+
+
+
