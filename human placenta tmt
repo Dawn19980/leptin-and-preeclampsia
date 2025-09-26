@@ -1,0 +1,227 @@
+##human placenta  TMT
+
+##DEP
+library(limma)
+library(tidyverse)
+library(ggpubr)
+library(ggthemes)
+
+data0 <- read.csv("TMT.csv")
+data <- read.csv("TMT.csv") %>% 
+  select(c(3, 4:7,9:10, 13:15)) %>% 
+  as.data.frame()
+row_names <- make.unique(as.character(data[,1]))
+data <- data[, -1]
+rownames(data) <- row_names
+sample_names <- colnames(data)
+meta <- data.frame(sample_id = sample_names,Type = c(rep("PE", 6), rep("HP", 3)), stringsAsFactors = FALSE)
+rownames(meta) <- sample_names
+stopifnot(identical(rownames(meta), colnames(data)))
+exp_matrix <- as.matrix(data)
+exp_matrix[exp_matrix <= 0] <- NA 
+keep <- rowSums(!is.na(exp_matrix)) >= ncol(exp_matrix)/2 
+exp_matrix <- exp_matrix[keep, ]
+
+
+if(max(exp_matrix, na.rm = TRUE) > 50) {exp_matrix <- log2(exp_matrix)}
+exp_matrix <- normalizeBetweenArrays(exp_matrix, method = "quantile")
+design <- model.matrix(~ 0 + Type, data = meta)
+colnames(design) <- c("PE", "HP")
+
+fit <- lmFit(exp_matrix, design)
+contrast <- makeContrasts(HP_vs_PE = HP - PE, levels = design)
+fit2 <- contrasts.fit(fit, contrast)
+fit2 <- eBayes(fit2)
+limma.res <- topTable(fit2, coef = "HP_vs_PE", 
+                      adjust.method = 'fdr', number = Inf) %>% 
+  rownames_to_column("ID") %>% 
+  mutate(
+    logP = -log10(P.Value),
+    tag = "HP vs PE",
+    Gene = ID,
+    group = case_when(
+      P.Value < 0.05 & logFC > 0.26 ~ "up",
+      P.Value < 0.05 & logFC < -0.26 ~ "down",
+      TRUE ~ "not sig"
+    )
+  )
+result_summary <- table(limma.res$group)
+print(result_summary)
+limma.res_merged<- limma.res
+limma.res_merged$Gene.y <- limma.res$Gene
+write.csv(limma.res, "/Limma_HP_vs_PE.csv", row.names = FALSE)
+
+
+##Venn图
+
+library(ggvenn)
+library(tidyverse)
+
+data1 <- read.csv("DEGs_FC1pvalue0.05.csv")
+data2 <- read.csv("Limma_HP_vs_PE.csv")
+
+A <- as.character(data1$gene_name[data1$group == "UP"])
+B <- as.character(data2$Gene[data2$group == "up"])
+C <- as.character(data1$gene_name[data1$group == "DOWN"])
+D <- as.character(data2$Gene[data2$group == "down"])
+venn_data <- list(A = A, B = B, C = C, D = D)
+venn_data <- list(
+  "mRNA-Up" = A,
+  "Protein-Up" = B,
+  "mRNA-Down" = C,
+  "Protein-Down" = D
+)
+
+# Up-regulated genes Venn diagram
+venn_up <- ggvenn(
+  list("mRNA-Up" = A, "Protein-Up" = B),
+  fill_color = c("#069DFF", "#A4E048"),
+  stroke_size = 0.5,
+  set_name_size = 5,
+  text_size = 5
+) + 
+  ggtitle("Up-regulated") +
+  theme(plot.title = element_text(hjust = 0.5, size = 12, face = "bold"))
+
+# Down-regulated genes Venn diagram
+venn_down <- ggvenn(
+  list("mRNA-Down" = C, "Protein-Down" = D),
+  fill_color = c("#F3B169", "#808080"),
+  stroke_size = 0.5,
+  set_name_size = 5,
+  text_size = 5
+) + 
+  ggtitle("Down-regulated") +
+  theme(plot.title = element_text(hjust = 0.5, size = 12, face = "bold"))
+library(patchwork)
+combined_plots <- venn_up + venn_down + plot_layout(ncol =1)
+print(combined_plots)
+
+up_intersect <- intersect(A, B)
+print(paste("上调交集基因数量:", length(up_intersect)))
+print(up_intersect)
+down_intersect <- intersect(C, D)
+print(paste("下调交集基因数量:", length(down_intersect)))
+print(down_intersect)
+
+
+##upset 图
+library(UpSetR)
+
+upset_data <- list(
+  "mRNA-Up" = A,
+  "Protein-Up" = B,
+  "mRNA-Down" = C,
+  "Protein-Down" = D
+)
+custom_colors <- c(
+  "mRNA-Up" = "#069DFF",   
+  "Protein-Up" = "#A4E048", 
+  "mRNA-Down" = "#F3B169",  
+  "Protein-Down" = "#808080"
+)
+
+upset <- upset(
+  fromList(upset_data),
+  nsets = 4,
+  sets.bar.color = custom_colors,
+  nintersects = 20,
+  mb.ratio = c(0.6, 0.4),
+  order.by = "freq",
+  decreasing = TRUE,
+  text.scale = 1.5,
+  point.size = 3,
+  line.size = 1,
+  mainbar.y.label = "Intersection Size",
+  queries = list(
+    list(
+      query = elements, 
+      params = list("mRNA-Up", "Protein-Up"),
+      active = TRUE,
+      color = "#FF0000" # 标注颜色（红色突出显示）
+    )
+  )
+)
+upset
+
+
+##FC-FC plot
+library(tidyverse)
+library(ggrepel)
+
+rna <- read.csv("DEGs_FC1pvalue0.05.csv")
+protein <- read.csv("Limma_HP_vs_PE.csv")
+
+rna <- rna %>% mutate(rna_group = case_when(logFC > 1 & pvalue < 0.05 ~ "UP", logFC < -1 & pvalue < 0.05 ~ "DN",TRUE ~ "N.S."  ) )
+protein <- protein %>% mutate(protein_group = case_when(
+      logFC_p > 0.26 & pvalue < 0.05 ~ "UP",
+      logFC_p < -0.26 & pvalue < 0.05 ~ "DN",
+      TRUE ~ "N.S."
+    )
+  )
+data <- rna %>% 
+  left_join(
+    protein %>% 
+      group_by(gene_name) %>% 
+      slice_min(pvalue, n = 1, with_ties = FALSE),
+    by = "gene_name"
+  ) %>% 
+  filter(!is.na(logFC_p)) %>% 
+  mutate(
+    group = factor(
+      case_when(
+        rna_group == "UP" & protein_group == "UP" ~ "UP_UP",
+        rna_group == "DN" & protein_group == "DN" ~ "DN_DN",
+        TRUE ~ "N.S."
+      ),
+      levels = c("UP_UP", "DN_DN", "N.S.")
+    )
+  ) %>% 
+  arrange(logFC) %>% 
+  mutate(rank = row_number())
+
+p <- ggplot(data, aes(x = rank, y = logFC_p)) + 
+  geom_point(
+    aes(color = group, fill = group),
+    alpha = 0.3, shape = 21, size = 1.8, stroke = 1.2
+  ) + 
+  geom_point(
+    data = data %>% filter(gene_name %in% c("LEP")),
+    aes(fill = group),
+    color = "black", shape = 21, size = 4, alpha = 1
+  ) + 
+  geom_text_repel(
+    data = data %>% filter(gene_name %in% c("LEP")),
+    aes(label = gene_name),
+    size = 5, color = "black",
+    min.segment.length = 0, box.padding = 1
+  ) + 
+  geom_hline(yintercept = 0, linetype = "dotted", color = "grey20") + 
+  scale_color_manual(
+    name = "RNA-Protein",
+    values = c("UP_UP" = "#F80000", "DN_DN" = "#0080BB", "N.S." = "grey"),
+    labels = c("Both UP", "Both Down", "Not significant"),
+    drop = FALSE
+  ) + 
+  scale_fill_manual(
+    name = "RNA-Protein",
+    values = c("UP_UP" = "#F80000", "DN_DN" = "#0080BB", "N.S." = "grey"),
+    labels = c("Both UP", "Both Down", "Not significant"),
+    drop = FALSE
+  ) + 
+  labs(
+    x = "Rank of log2FC (Bulk RNA-seq)", 
+    y = "log2FC (Protein)"
+  ) + 
+  theme_classic() + 
+  theme(
+    legend.position = "top", 
+    legend.direction = "horizontal", 
+    legend.justification = c(0.1, 0),  
+    legend.box.margin = margin(t = 0, r = 0, b = 0, l = 0), 
+    legend.background = element_blank(), 
+    legend.title = element_text(size = 9),  
+    legend.text = element_text(size = 9) 
+  )
+p
+
