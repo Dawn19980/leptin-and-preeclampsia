@@ -1,0 +1,316 @@
+##Human placenta 6 vs 3 bulk RNA_seq
+
+##PCA 
+library(tidyverse)
+library(DESeq2)
+
+setwd("G:/bulk RNA")
+countData0 <- read.csv("gene_count.csv", stringsAsFactors = FALSE) %>%  select(c(1:4,6:8,11:13)) %>% column_to_rownames("gene_id") %>% as.matrix()
+countData <- apply(countData0, 2, as.numeric) 
+rownames(countData) <- rownames(countData0)
+colData <- data.frame(sample_id = colnames(countData),group = factor(rep(c("PE", "HP"), times=c(6,3)), levels = c("HP", "PE")))
+
+dds <- DESeqDataSetFromMatrix(countData, colData, design=~group)
+dds <- dds[rowSums(counts(dds)) >= 10, ] 
+vsd <- vst(dds, blind = FALSE)
+pca_data <- assay(vsd) %>% t() 
+pca_result <- prcomp(pca_data, center=TRUE, scale.=TRUE) 
+df_pca <- as.data.frame(pca_result$x) %>% rownames_to_column("sample_id") %>% left_join(colData, by="sample_id")
+
+pca_result <- prcomp(pca_data, center=TRUE, scale.=TRUE)
+df_pca <- as.data.frame(pca_result$x) %>% rownames_to_column("sample_id") %>% left_join(colData, by="sample_id")
+group_centers <- aggregate(cbind(PC1, PC2) ~ group, data = df_pca, FUN = mean)
+
+#  绘图
+p <- ggplot(df_pca, aes(PC1, PC2, color = group)) +
+   ggforce::geom_mark_ellipse(
+    aes(fill = group,color=group), 
+    alpha = 0.15,  
+    expand = 0.05, 
+    show.legend = FALSE
+  ) +
+  geom_point(size = 3.5) +
+  geom_text(
+    data = group_centers,
+    aes(
+      x = PC1,
+      y = PC2 + 20,  
+      label = group,
+      color = group
+    ),
+    size = 5,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  labs(x = paste0("PC1: ", round(summary(pca_result)$importance[2,1]*100, 1), "% variance"),
+       y = paste0("PC2: ", round(summary(pca_result)$importance[2,2]*100, 1), "% variance"),
+       color = "Group") +
+  scale_color_manual(
+    values = c("PE" = "#75C500", "HP" = "#5686C3"),
+    labels = c("HP" = "HP", "PE" = "PE")
+  ) +
+  scale_fill_manual(values = c("PE" = "#75C500", "HP" = "#5686C3")) +
+  theme_classic() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.5),
+    axis.line = element_blank(), 
+    axis.title = element_text(color = "black", face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(color = "black", size = 10, face = "bold"),
+    legend.position = "bottom",
+    aspect.ratio = 1
+  ) +
+  coord_cartesian(xlim = c(-180, 150), ylim = c(-150, 130)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", size = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 0.5)
+
+p
+
+##DEGs
+library(limma)
+library(dplyr)
+library(readr)
+
+mycounts0 <- read.csv("gene_count.csv", row.names = 1)
+mycounts <- mycounts0 %>% select(c(13,1,4:8,10:12)) 
+numeric_cols <- mycounts[, sapply(mycounts, is.numeric)]
+numeric_cols <- round(numeric_cols, digits = 0)
+mycounts_rounded <- cbind(mycounts[, !sapply(mycounts, is.numeric)], numeric_cols)
+numeric_columns <- sapply(mycounts, is.numeric)
+numeric_data <- mycounts[, numeric_columns]
+rounded_data <- round(numeric_data, digits = 0)
+numeric_cols <- rounded_data[, sapply(rounded_data, is.numeric)]
+mycounts_1 <- rounded_data[rowSums(numeric_cols) != 0, ]
+dim(mycounts_1)
+
+mymeta=read.csv("group.csv",stringsAsFactors = T)
+mymeta <- mymeta[c(1,4:8,10:12), ]
+colnames(mycounts_1) == mymeta$SampleID 
+
+library(DESeq2)
+mymeta$Group <- as.factor(mymeta$Group)
+mymeta$Group<-relevel(mymeta$Group,ref="C") 
+dds <- DESeqDataSetFromMatrix(countData = mycounts_1, colData = mymeta, design = ~ Group) 
+dds <- DESeq(dds)
+res <- results(dds,alpha=0.05)
+class(res)
+res_1<-data.frame(res)
+
+res_1 %>%   
+  mutate(group = case_when(    
+    log2FoldChange >= 1 & pvalue<= 0.05 ~ "UP",    
+    log2FoldChange <= -1 & pvalue <= 0.05 ~ "DOWN",    
+    TRUE ~ "NA"  )) -> res_2   
+table(res_2$group)
+data1<- res_2
+data1$gene_id <-data1$X 
+data2<- read.csv('gene_count.csv', header = TRUE)
+data <- left_join(data1, data2, by = "gene_id")
+data <- data %>%
+  select(gene_id, gene_name, log2FoldChange,pvalue,padj)
+write.csv(data,file="DEGs_FC1pvalue0.05.csv",quote = F)
+
+
+
+##volcanon
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+data<- read.csv('DEGs_FC1pvalue0.05.csv', header = TRUE)
+data <- data %>% dplyr::filter(log2FoldChange >= -6 & log2FoldChange <= 7)  
+data <- data %>% dplyr::filter(-log10(pvalue) >= 0 & -log10(pvalue) <= 6) 
+DOWN <- subset(data, log2FoldChange < -1 & pvalue < 0.05)
+UP <- subset(data, log2FoldChange > 1 & pvalue < 0.05)
+Top_10_UP <- data %>% filter(log2FoldChange > 1 & pvalue < 0.05) %>% arrange(desc(log2FoldChange)) %>% head(10)
+Top_10_DOWN <- data %>% filter(log2FoldChange < -1 & pvalue < 0.05) %>% arrange(log2FoldChange) %>% head(10)
+Mark <- c("LEP","FLT1","CRH","GDF15","SERPINA1","TLR2","TGFB1","HOTAIR","CXCR3","PTGS2","GZMK")
+up <- as.character(data$gene_id[data$log2FoldChange > 1 &  data$pvalue < 0.05 & !data$gene_name %in% Mark & !is.na(data$gene_id)])
+down <- as.character(data$gene_id[data$log2FoldChange < -1 &  data$pvalue < 0.05 &       !data$gene_name %in% Mark & !is.na(data$gene_id)])
+data <- data %>%mutate(group_4 = case_when(gene_id %in% up ~ "UP",gene_id %in% down  ~ "DOWN",gene_name %in% Mark ~ "Mark",TRUE ~ "Other"))
+
+p <- ggplot(data,aes(x = log2FoldChange,y = -log10(pvalue))) +
+  geom_rect(aes(xmin = min(UP$log2FoldChange), 
+                xmax = max(UP$log2FoldChange),
+                ymin = -log10(0.05),
+                ymax = -log10(min(UP$pvalue))),
+            fill = "#FFEEEE") +
+  geom_rect(aes(xmin = min(DOWN$log2FoldChange), 
+                xmax = max(DOWN$log2FoldChange),
+                ymin = -log10(0.05),
+                ymax = -log10(min(DOWN$pvalue))),
+            fill = "#E8F1F8") +
+  geom_rect(aes(xmin = min(Top_10_UP$log2FoldChange),
+                xmax = max(Top_10_UP$log2FoldChange),
+                ymin = -log10(max(Top_10_UP$pvalue)),
+                ymax = -log10(min(UP$pvalue))),
+            fill = "transparent",color="black",
+            linewidth = 0.5,
+            linetype = "dotted") +
+   geom_vline(xintercept = 0, linewidth = 1,linetype = "dotted", color = "grey60") +
+  geom_hline(yintercept = -log10(0.05), linewidth = 1,linetype = "dotted",color = "#AD6D6F") +
+  geom_point(data=subset(data,group_4=="Other"),shape = 21,color="black",alpha=0.06,size=1.5,stroke=0) +
+  geom_point(data=subset(data,group_4=="UP"),shape = 21,fill="#DAA520",color="black",size=2.5,stroke=0.1) +
+  geom_point(data=subset(data,group_4=="DOWN"),shape = 21,fill="grey",color="black",size=2.5,stroke=0.1) +
+  geom_point(data=subset(data,group_4=="Mark"),shape = 21,fill="red",color="black",size=3,stroke=0.1) +
+  geom_label_repel(data=subset(data,group_4=="Mark"),aes(label=gene_name),
+                   fill="white",alpha=0.8,size= 5,min.segment.length=unit(0.1, "lines"),
+                   box.padding=unit(0.5, "lines"), point.padding=unit(0.2, "lines"), 
+                   segment.color = "grey30",direction ="both",seed =2)+
+  annotate("text",                       
+           x=-1.5,        
+           y=-log10(min(DOWN$pvalue))+0.2,                    
+           label="DOWN", 
+           lineheight = 0.8,
+           size=5,                       
+           color="#3A6BAF",fontface = "bold", 
+           vjust=0)+
+  annotate("text",                       
+           x=1.5,        
+           y=-log10(min(UP$pvalue))+0.2,                         
+           label="UP", 
+           lineheight = 0.8,
+           size=5,                       
+           color="#D7191C",fontface = "bold", 
+           vjust=0)+
+  annotate("text",                      
+           x=max(Top_10_UP$log2FoldChange)-1,        
+           y=-log10(min(UP$pvalue))+0.2,                         
+           label="Top 10",
+           lineheight = 1,
+           size=5,           
+           hjust=0)+
+  annotate("text",                       
+           x=6,       
+           y=-log10(0.05)-0.05,                         
+           label="α = 0.05", 
+           lineheight = 1,
+           size=5,                       
+           color="#AD6D6F",
+           hjust=1,
+           vjust=1)+
+  scale_x_continuous(limits = c(-7,7),breaks = seq(-5,5,1),labels = seq(-5,5,1),expand = c(0,0))+
+  scale_y_continuous(limits = c(0,6.5),breaks = seq(-2,6,2),labels = c("",0,2,4,6),expand = expansion(add=c(0,0.10)))+
+  labs(x= "PE vs HP (log2FC)", y="-log10 (P value)")+
+  theme_classic()+
+  theme(
+    axis.text = element_text(color = "black", size = 17),
+    axis.title =  element_text(color = "black", size =17),
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank())
+p
+
+
+
+##GSEA
+library(dplyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+diff_exp <- read.csv('DEGs_FC1pvalue0.05.csv') %>%dplyr::select(gene_id, log2FoldChange, pvalue) %>%na.omit() %>%filter(pvalue < 0.05)
+gene_list_sorted <- sort(gene_list_sorted, decreasing = TRUE)
+gene_df <- bitr(names(gene_list_sorted), 
+                fromType = "ENSEMBL",
+                toType = c("ENTREZID", "SYMBOL"),
+                OrgDb = org.Hs.eg.db) %>% mutate(log2FC = gene_list_sorted[ENSEMBL]) %>% filter(!is.na(ENTREZID)) %>%  as.data.frame() 
+gene_list_entrez <- gene_df %>%
+  group_by(ENTREZID) %>%
+  arrange(desc(abs(log2FC)), .by_group = TRUE) %>%
+  dplyr::slice(1) %>%
+  ungroup() %>%
+  arrange(desc(log2FC)) %>%
+  {setNames(.$log2FC, .$ENTREZID)}
+goresult <- data.frame(gsea_res@result)
+rio::export(goresult, "gsea.csv")
+
+
+library(ggplot2)
+library(ggridges)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+
+gsea_selected <- read.csv('gsea(-p4p8c1)_select.csv', header = TRUE)
+gene_data <- data.frame(Symbol = names(gene_list_entrez),log2FC = gene_list_entrez,row.names = NULL)
+
+plot_data <- gsea_selected %>%
+  dplyr::mutate(log10P = -log10(pvalue)) %>%
+  tidyr::separate_rows(core_enrichment, sep = "/") %>%
+  left_join(gene_data, by = c("core_enrichment" = "Symbol")) %>%
+  dplyr::mutate(
+    Description = factor(Description, 
+                         levels = rev(unique(Description[order(p.adjust)])))
+  )
+head(plot_data[, c("Description", "core_enrichment", "log2FC")])
+ridge_colors <- colorRampPalette(c("#8075ad", "#f5edf0","#f5da73", "#ffb800"))(100)
+bubble_colors <- colorRampPalette(c("#2C7BB6", "#F0F0F0","#D7191C"))(50)
+
+p_ridge <- ggplot(plot_data, aes(x = log2FC, y = Description, fill = stat(x))) +
+  geom_density_ridges_gradient(
+    scale = 1.5,
+    rel_min_height = 0.01,
+    gradient_lwd = 0.3,
+    alpha = 0.8
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey30", linewidth = 0.5) +
+  scale_fill_gradientn(
+    colors = ridge_colors,
+    name = "Log2FC",
+    limits = c(-max(abs(plot_data$log2FC)), max(abs(plot_data$log2FC)))
+  ) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "",
+    title = "Gene Expression Distribution in Top Pathways"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(color = "black", size = 10),
+    axis.title.x = element_text(size = 11, margin = margin(t = 10)),
+    legend.position = "right",
+    legend.key.height = unit(1, "cm"),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5)
+  )
+
+bubble_data <- gsea_selected %>%
+  dplyr::mutate(
+    Description = factor(Description, 
+                         levels = rev(unique(Description[order(p.adjust)])))
+  )
+p_bubble <- ggplot(bubble_data, aes(x = 1, y = Description)) +
+  geom_point(
+    aes(size = setSize, color = NES),
+    alpha = 0.8,
+    shape = 16
+  ) +
+  scale_color_gradientn(
+    colors = bubble_colors,
+    name = "NES",
+    limits = c(-max(abs(bubble_data$NES)), max(abs(bubble_data$NES))),
+    breaks = seq(-3, 3, by = 1)
+  ) +
+  scale_size_continuous(
+    name = "Gene Count",
+    range = c(3, 8),
+    breaks = pretty(bubble_data$setSize, n = 3)
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    legend.box = "vertical",
+    legend.position = "right",
+    legend.spacing.y = unit(0.2, "cm"),
+    legend.text = element_text(size = 9),
+    legend.title = element_text(size = 10)
+  )
+
+p_ridge+p_bubble
+
+
