@@ -1,0 +1,329 @@
+
+conda create -n cell2location -y python=3.9
+conda activate cell2location
+pip install -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple jupyterlab 
+pip config set global.index-url https://pypi.mirrors.ustc.edu.cn/simple/
+pip install scanpy
+pip install cell2location[tutorials]
+pip install pandas==2.1.1
+
+source ~/.bashrc
+srun --nodelist=node12 --partition=gpu --gres=gpu:1 --ntasks=1 --cpus-per-task=4 --mem=16G --pty /bin/sh
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate cell2location
+
+export CUDA_HOME=/usr/local/cuda-12.4 
+export PATH=$CUDA_HOME/bin:$PATH
+
+python
+import torch
+import jax
+import jaxlib
+import sys
+import scanpy as sc
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import cell2location
+from matplotlib import rcParams
+rcParams['pdf.fonttype'] = 42 # enables correct plotting of text for PDFs
+
+results_folder = '/home/liyan/huangchangzhen/R/normal villi Spatiotemporal omics/outputs/'
+# create paths and names to results folders for reference regression and cell2location models
+ref_run_name = f'{results_folder}/reference_signatures'
+run_name = f'{results_folder}/cell2location_map'
+
+
+adata_ref = sc.read(f'/home/normal villi Spatiotemporal omics/adata_P13_trophoblast_raw_counts_in_raw_normlog_counts_in_X_for_download.h5ad')
+adata_ref = adata_ref.raw.to_adata()  
+import scipy.sparse
+adata_ref.X = adata_ref.X.astype(int)
+
+def check_consistent(row):
+    filtered_values = [x for x in row if str(x).lower() != "nan"]
+    unique_values = pd.unique(filtered_values)  
+    return len(unique_values) <= 1
+
+gene_cols = [f'gene_ids-{i}' for i in range(8)]
+gene_df = adata_ref.var[gene_cols].copy()
+import pandas as pd
+consistent_mask = gene_df.apply(check_consistent, axis=1)
+adata_ref.var['ENSEMBL_ID'] = gene_df.apply(
+    lambda x: next((v for v in x if str(v).lower() != "nan"), None),
+    axis=1
+)
+print(adata_ref.var['ENSEMBL_ID'].head())
+adata_ref.var['SYMBOL'] = adata_ref.var.index
+adata_ref.var.index = adata_ref.var['ENSEMBL_ID'].copy()
+adata_ref.var_names = adata_ref.var['ENSEMBL_ID'].copy()
+adata_ref.var.index.name = None
+dup_genes = adata_ref.var_names[adata_ref.var_names.duplicated()]
+
+cell_type_mapping = {
+    'EVT_1': 'EVT',
+    'EVT_2': 'EVT',
+    'eEVT': 'EVT',
+    'iEVT': 'EVT',
+    'VCT': 'VCT',
+    'VCT_CCC': 'VCT',
+    'VCT_fusing': 'VCT',
+    'VCT_p': 'VCT',
+    'GC': 'GC',
+    'SCT': 'SCT'
+}
+adata_ref.obs['cell_type_merged'] = adata_ref.obs['final_annot_all_troph_corrected'].map(cell_type_mapping)
+print(adata_ref.obs['cell_type_merged'].value_counts())
+print(adata_ref.obs['cell_type_merged'].unique())  
+
+from cell2location.utils.filtering import filter_genes
+selected = filter_genes(adata_ref, cell_count_cutoff=10, cell_percentage_cutoff2=0.05, nonz_mean_cutoff=1.5)
+adata_ref = adata_ref[:, selected].copy()
+
+
+from cell2location.models import RegressionModel
+cell2location.models.RegressionModel.setup_anndata(
+    adata=adata_ref,
+    batch_key="sample",          
+    labels_key="cell_type_merged",  
+    categorical_covariate_keys=None,     
+    continuous_covariate_keys=None       
+)
+# create the regression model
+mod = RegressionModel(adata_ref)
+# view anndata_setup as a sanity check
+mod.view_anndata_setup()
+
+mod.train(
+    max_epochs=250,
+    accelerator="gpu"  
+)
+
+mod.plot_history(20)
+plt.savefig('training_history.png', dpi=300, bbox_inches='tight')
+#plt.close()  
+
+adata_ref = mod.export_posterior adata_ref, sample_kwargs={'num_samples': 1000, 'batch_size': 2500})
+mod.save('./reference_signatures/', overwrite=True)
+adata_file = "./reference_signatures/sc.h5ad"
+adata_ref.write(adata_file)
+adata_file
+
+adata_file = "./reference_signatures/sc.h5ad"
+adata_ref = sc.read_h5ad(adata_file)
+mod = cell2location.models.RegressionModel.load('./reference_signatures/', adata_ref)
+
+
+mod.plot_QC()
+plt.savefig('Reconstruction_accuracy.png', dpi=300, bbox_inches='tight')
+plt.close()  存
+
+
+# export estimated expression in each cluster
+if 'means_per_cluster_mu_fg' in adata_ref.varm.keys():
+    inf_aver = adata_ref.varm['means_per_cluster_mu_fg'][[
+        f'means_per_cluster_mu_fg_{i}' 
+        for i in adata_ref.uns['mod']['factor_names']
+    ]].copy()
+else:
+    inf_aver = adata_ref.var[[
+        f'means_per_cluster_mu_fg_{i}' 
+        for i in adata_ref.uns['mod']['factor_names']
+    ]].copy()
+
+inf_aver.columns = adata_ref.uns['mod']['factor_names']
+print(inf_aver.iloc[0:12, 0:12])
+
+
+
+#Visium
+adata_vis = sc.read_visium("/home/normal villi Spatiotemporal omics/WS_PLA_S9101767/", count_file='filtered_feature_bc_matrix.h5', load_images=True)
+adata_vis
+adata_vis.var_names
+
+# rename genes to ENSEMBL ID for correct matching between single cell and spatial data 
+adata_vis.obs['sample'] = list(adata_vis.uns['spatial'].keys())[0]
+adata_vis.var['SYMBOL'] = adata_vis.var_names
+adata_vis.var.set_index('gene_ids', drop=True, inplace=True)
+adata_vis
+adata_vis.var_names
+
+# find mitochondria-encoded (MT) genes
+adata_vis.var['MT_gene'] = [gene.startswith('MT-') for gene in adata_vis.var['SYMBOL']]
+#  remove MT genes for spatial mapping (keeping their counts in the object)
+adata_vis.obsm['MT'] = adata_vis[:, adata_vis.var['MT_gene'].values].X.toarray()
+adata_vis = adata_vis[:, ~adata_vis.var['MT_gene'].values]
+
+
+
+
+
+# find shared genes and subset both anndata and reference signatures
+intersect = np.intersect1d(adata_vis.var_names, inf_aver.index)
+adata_vis = adata_vis[:, intersect].copy()
+inf_aver = inf_aver.loc[intersect, :].copy()
+
+# prepare anndata for cell2location model
+cell2location.models.Cell2location.setup_anndata(adata=adata_vis, batch_key="sample")
+
+# create and train the model
+mod = cell2location.models.Cell2location(
+    adata_vis, cell_state_df=inf_aver,
+    N_cells_per_location=30,
+    detection_alpha=20
+)
+mod.view_anndata_setup()
+
+#Training cell2location
+mod.train(max_epochs=30000,
+          batch_size=None,
+          train_size=1
+         )
+
+mod.plot_history(1000)
+plt.legend(labels=['full data training']);
+plt.savefig('03-mod.plot_history_WS_PLA_S9101767.png')
+
+
+adata_vis = mod.export_posterior(adata_vis, sample_kwargs={'num_samples': 1000, 'batch_size': mod.adata.n_obs})
+mod.save("WS_PLA_S9101767_model.pt", overwrite=True)
+
+adata_file = "./sp_WS_PLA_S9101767.h5ad"
+adata_vis.write(adata_file)
+adata_file
+
+adata_file = "./sp_WS_PLA_S9101767.h5ad"
+adata_vis = sc.read_h5ad(adata_file)
+mod = cell2location.models.Cell2location.load("WS_PLA_S9101767_model.pt", adata_vis)
+
+mod.plot_QC()
+plt.savefig('04-mod.plot_QC.png')  
+
+
+adata_vis.obsm
+adata_vis.obsm['q05_cell_abundance_w_sf']
+adata_vis.obsm['q95_cell_abundance_w_sf']
+adata_vis.obs[adata_vis.uns['mod']['factor_names']] = adata_vis.obsm['q05_cell_abundance_w_sf']
+
+from cell2location.utils import select_slide
+available_slides = list(adata_vis.uns['spatial'].keys())
+slide = select_slide(adata_vis, available_slides[0])
+
+
+from cell2location.plt import plot_spatial
+clust_labels = ['EVT', 'SCT', 'VCT']
+clust_col = ['' + str(i) for i in clust_labels] # in case column names differ from labels
+clust_col
+
+with mpl.rc_context({'figure.figsize': (15, 15)}):
+    fig = plot_spatial(
+        adata=slide,
+        # labels to show on a plot
+        color=clust_col, labels=clust_labels,
+        show_img=False,
+        # 'fast' (white background) or 'dark_background'
+        style='fast',
+        # limit color scale at 99.2% quantile of cell abundance
+        max_color_quantile=0.992,
+        # size of locations (adjust depending on figure size)
+        circle_diameter=6,
+        colorbar_position='right'
+    )
+plt.savefig('3celltype_spatialWS_PLA_S9101767_noHE.pdf') 
+
+
+
+
+
+import scanpy as sc
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from scipy.stats import mannwhitneyu
+import numpy as np
+
+lep_ensembl_id = "ENSG00000174697"
+target_cell_types = ['EVT', 'SCT', 'VCT']
+
+results_folder = "./results" 
+import os
+os.makedirs(results_folder, exist_ok=True)
+
+adata_vis.obs['LEP_expression'] = adata_vis[:, lep_ensembl_id].X.toarray().flatten()
+abundance_cols = []
+for ct in target_cell_types:
+    matched = [col for col in adata_vis.obs.columns if ct.lower() in col.lower()]
+    if not matched:
+        raise ValueError(f"未找到{ct}的丰度列，请检查列名")
+    abundance_cols.append(matched[0])
+adata_vis.obs = adata_vis.obs.rename(
+    columns={abundance_cols[i]: target_cell_types[i] for i in range(3)}
+)
+
+adata_vis.obs['unique_cell_type'] = adata_vis.obs[target_cell_types].idxmax(axis=1)
+adata_plot = adata_vis[adata_vis.obs['unique_cell_type'].isin(target_cell_types)].copy()
+
+sct_lep = adata_plot[adata_plot.obs['unique_cell_type'] == 'SCT'].obs['LEP_expression']
+evt_lep = adata_plot[adata_plot.obs['unique_cell_type'] == 'EVT'].obs['LEP_expression']
+vct_lep = adata_plot[adata_plot.obs['unique_cell_type'] == 'VCT'].obs['LEP_expression']
+
+# SCT vs EVT
+stat_se, p_se = mannwhitneyu(sct_lep, evt_lep, alternative='greater')
+# SCT vs VCT
+stat_sv, p_sv = mannwhitneyu(sct_lep, vct_lep, alternative='greater')
+
+print(f"SCT vs EVT p: {p_se:.3e}")
+print(f"SCT vs VCT p: {p_sv:.3e}")
+plt.figure(figsize=(8, 6))
+sns.violinplot(
+    x="unique_cell_type",
+    y="LEP_expression",
+    data=adata_plot.obs,
+    palette={'SCT': '#ffcc99', 'EVT': '#4da6ff', 'VCT': '#cc6666'},
+    inner="box",
+    order=['SCT', 'EVT', 'VCT']
+)
+plt.text(0, adata_plot.obs['LEP_expression'].max()*1.05, f"SCT vs EVT: p={p_se:.2e}", 
+         ha='center', fontsize=10)
+plt.text(1, adata_plot.obs['LEP_expression'].max()*1.15, f"SCT vs VCT: p={p_sv:.2e}", 
+         ha='center', fontsize=10)
+
+plt.title('LEP Expression in Different Cell Types')
+plt.xlabel('Cell Type')
+plt.ylabel('LEP Expression Level')
+plt.tight_layout()
+plt.savefig(f"{results_folder}/LEP_celltype_violin_WS_PLA_S9101767.pdf", dpi=300, bbox_inches='tight')
+plt.close()
+
+
+
+
+lep_ensembl_id = "ENSG00000174697"
+if lep_ensembl_id not in adata_vis.var_names:
+    raise ValueError(f"空间数据中未找到 {lep_ensembl_id}，请检查ID")
+output_path = f'{results_folder}/LEP_spatial_expression_WS_PLA_S9101767.pdf'
+
+with mpl.rc_context({'figure.figsize': (12, 10)}):
+    ax_list = sc.pl.spatial(
+        adata_vis,
+        color=lep_ensembl_id,
+        img_key=None,  
+        cmap='Oranges',  
+        size=1.3,
+        vmin=0,
+        vmax='p99.2',
+        show=False
+    )
+    ax = ax_list[0]
+    cbar = plt.gcf().colorbar(ax.collections[0], ax=ax)
+    cbar.set_label('LEP expression', fontsize=12)
+    plt.tight_layout()
+    plt.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches='tight',
+        facecolor='white'
+    )
+    plt.close()
+
+
+    
